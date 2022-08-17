@@ -1,0 +1,496 @@
+library(caret)
+
+# Import data set
+wifi <- read.csv("wifiFingerprints.csv")
+
+# Initial data evaluation
+sum(is.na(wifi))
+str(wifi)
+summary(wifi)
+hist(wifi$BUILDINGID)
+hist(wifi$FLOOR)
+hist(wifi$SPACEID)
+hist(wifi$RELATIVEPOSITION)
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###                  Prepare Data Set for Classification                     ###   
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+# Drop unnecessary columns
+wifi <- subset(wifi, select = -c(LONGITUDE, LATITUDE, USERID, PHONEID, TIMESTAMP))
+
+# Subset data by building number
+wifi_bldgA <- subset(wifi, BUILDINGID == 0)
+wifi_bldgB <- subset(wifi, BUILDINGID == 1)
+wifi_bldgC <- subset(wifi, BUILDINGID == 2)
+
+
+# Visualization of Building A locations
+hist(wifi_bldgA$FLOOR)
+hist(wifi_bldgA$SPACEID)
+hist(wifi_bldgA$RELATIVEPOSITION)
+
+# Visualization of Building A locations
+hist(wifi_bldgB$FLOOR)
+hist(wifi_bldgB$SPACEID)
+hist(wifi_bldgB$RELATIVEPOSITION)
+
+# Visualization of Building A locations
+hist(wifi_bldgC$FLOOR)
+hist(wifi_bldgC$SPACEID)
+hist(wifi_bldgC$RELATIVEPOSITION)
+
+
+# Concatenate location identifier variables into a single unique ID, rename column, bring to front, drop old columns.
+# Use 'A', 'B', and 'C' in place of building numbers to make dependent variable class levels valid R variable names.
+## Building 0
+wifi_bldgA <- cbind(wifi_bldgA, paste('A', wifi_bldgA$FLOOR, wifi_bldgA$SPACEID, wifi_bldgA$RELATIVEPOSITION, 
+                                      sep='_'), stringsAsFactors=TRUE)    # Combine columns...
+colnames(wifi_bldgA)[525] <- "LOCATIONID"    # ...rename new column...
+wifi_bldgA <- wifi_bldgA[,c(ncol(wifi_bldgA), 1:(ncol(wifi_bldgA)-1))]    # ...move it to the front of the dataframe...
+wifi_bldgA <- subset(wifi_bldgA, select = -c(FLOOR, BUILDINGID, SPACEID, RELATIVEPOSITION))    # ...and drop the old columns.
+
+## Repeat with Building 1 data set
+wifi_bldgB <- cbind(wifi_bldgB, paste('B', wifi_bldgB$FLOOR, wifi_bldgB$SPACEID, wifi_bldgB$RELATIVEPOSITION, 
+                                      sep='_'), stringsAsFactors=TRUE)
+colnames(wifi_bldgB)[525] <- "LOCATIONID"    # ...rename new column...
+wifi_bldgB <- wifi_bldgB[,c(ncol(wifi_bldgB), 1:(ncol(wifi_bldgB)-1))]
+wifi_bldgB <- subset(wifi_bldgB, select = -c(FLOOR, BUILDINGID, SPACEID, RELATIVEPOSITION))
+
+## Repeat with Building 2 data set
+wifi_bldgC <- cbind(wifi_bldgC, paste('C', wifi_bldgC$FLOOR, wifi_bldgC$SPACEID, wifi_bldgC$RELATIVEPOSITION, 
+                                      sep='_'), stringsAsFactors=TRUE)
+colnames(wifi_bldgC)[525] <- "LOCATIONID"
+wifi_bldgC <- wifi_bldgC[,c(ncol(wifi_bldgC), 1:(ncol(wifi_bldgC)-1))]
+wifi_bldgC <- subset(wifi_bldgC, select = -c(FLOOR, BUILDINGID, SPACEID, RELATIVEPOSITION))
+
+
+
+# Check feature variance in WAP columns and drop those that return no signals
+## Building 0
+nzvMetrics_bldgA <- nearZeroVar(wifi_bldgA, saveMetrics=TRUE)    # Check for zero variance and near zero variance...
+zv_bldgA <- which(nzvMetrics_bldgA$zeroVar == TRUE)    # ...identify columns with zero variance...
+wifi_bldgA <- wifi_bldgA[,-(zv_bldgA)]    # ...and remove each observation from the list.
+
+## Repeat with Building 1 data set
+nzvMetrics_bldgB <- nearZeroVar(wifi_bldgB, saveMetrics=TRUE)
+zv_bldgB <- which(nzvMetrics_bldgB$zeroVar == TRUE)
+wifi_bldgB <- wifi_bldgB[,-(zv_bldgB)]
+
+## Repeat for Building 2 data set
+nzvMetrics_bldgC <- nearZeroVar(wifi_bldgC, saveMetrics=TRUE)
+zv_bldgC <- which(nzvMetrics_bldgC$zeroVar == TRUE)
+wifi_bldgC <- wifi_bldgC[,-(zv_bldgC)]
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###                      Set Up Parallel Processing                          ###   
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+library(doParallel)
+
+# Find how many cores are on machine
+detectCores() # Result = 16
+
+# Create Cluster with desired number of cores. 
+cl <- makeCluster(12)
+
+# Register Cluster
+registerDoParallel(cl)
+
+# Confirm how many cores are now "assigned" to R and RStudio
+getDoParWorkers() # Result 12 
+
+# Stop Cluster. After performing tasks, stop cluster. 
+# stopCluster(cl)
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###                           Train/Test Split                               ###   
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+# We'll try using only Building A to start.
+
+# Splitting data into training and testing sets
+set.seed(2395)
+index_bldgA <- createDataPartition(wifi_bldgA$LOCATIONID, p=0.75, list=FALSE)
+trainSetA <- wifi_bldgA[index_bldgA,]
+testSetA <- wifi_bldgA[-index_bldgA,]
+
+# Check feature correlation
+# correlationMatrix <- cor(wifi_bldgA[,2:201])
+# print(correlationMatrix)
+# highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+# print(highlyCorrelated)
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###                             Train Models                                 ###   
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+# library(fastAdaboost)      # For Adaboost Classification Trees
+library(adabag)            # For Bagged Adaboost
+library(plyr)              # For Bagged Adaboost
+library(randomForest)      # For Random Forrest Classifier
+# library(gbm)               # For Gradient Boosting
+# library(xgboost)           # For eXtreme Gradient Boosting
+# library(earth)             # For Bagged Flexible Discriminant Analysis
+# library(mda)               # For Bagged Flexible Discriminant Analysis
+# library(nnet)              # For Model Averaged Neural Networks
+library(klaR)              # For Naive-Bayes
+# library(bnclassify)        # For Model Averaged Naive-Bayes
+# library(sdwd)              # For Sparse Distance Weighted Discrimination
+
+# Tuning parameters
+ctrl <- trainControl(method="repeatedcv", number=10, repeats=1)
+
+# Train C5.0 model
+set.seed(2395)
+system.time(
+  c50Fit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="C5.0", trControl=ctrl, tuneLength=10) # elapsed 1096.0
+)
+
+# Train AdaBoost Classification Trees model
+# set.seed(2395)
+# system.time(
+#   adaFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="adaboost", trControl=ctrl, tuneLength=10)
+# )
+# Received error message
+
+# Train Bagged AdaBoost model
+set.seed(2395)
+system.time(
+  adaFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="AdaBag", trControl=ctrl, tuneLength=10) # elapsed 2421.79
+)
+
+# Train KNN model
+# set.seed(2395)
+# system.time(
+#   knnFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="knn", trControl=ctrl, tuneLength=10) # elapsed 10.38
+# )
+
+knnGrid <- expand.grid(k=c(1,2,3,4,5))
+set.seed(2395)
+system.time(
+  knnFit2 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="knn", trControl=ctrl, tuneGrid=knnGrid) # elapsed 7.31
+)
+# Improved accuracy using tuneGrid
+
+# Train RandomForest model
+set.seed(2395)
+system.time(
+  rfFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="rf", trControl=ctrl, tuneLength=10) # elapsed 444.31
+)
+# Reran with cv repeat = 3, elapsed 1242.48. Lost a small amount of accuracy (0.0005)
+
+# Train Stochastic Gradient Boosting model
+# set.seed(2395)
+# system.time(
+#   gbmFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="gbm", trControl=ctrl, tuneLength=10) 
+# )
+# Could not complete
+
+# Train eXtreme Gradient Boosting model
+# set.seed(2395)
+# system.time(
+#  xgbFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="xgbTree", trControl=ctrl, tuneLength=10) 
+# )
+# Could not complete: Timing stopped at: 3.06 1.74 4.703e+04
+
+# Train Bagged Flexible Discriminant Analysis model
+# set.seed(2395)
+# system.time(
+#   fdaFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="bagFDA", trControl=ctrl, tuneLength=10) # elapsed 17809.17
+# )
+# Took nearly 5 hours to complete and had only about 43% accuracy. Not worth it.
+
+# Train Averaged Neural Networks model
+# set.seed(2395)
+# system.time(
+#   annFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="avNNet", trControl=ctrl, tuneLength=10) # elapsed 518.00
+# )
+# Less than 2% accuracy
+
+# Train Naive-Bayes model
+set.seed(2395)
+system.time(
+  nbFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="nb", trControl=ctrl, tuneLength=10) # elapsed 655.81 
+)
+
+# Train Averaged Naive-Bayes model
+# set.seed(2395)
+# system.time(
+#   nbFit2 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="manb", trControl=ctrl, tuneLength=10) 
+# )
+# Error: Stopping
+# In addition: Warning message:
+# In nominalTrainWorkflow(x = x, y = y, wts = weights, info = trainInfo,  :
+
+# Train Sparse Distance Weighted Discrimination model
+# set.seed(2395)
+# system.time(
+#   dwdFit1 <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="sdwd", trControl=ctrl, tuneLength=10) # elapsed 13.65
+# )
+# Less than 0.2% accuracy
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###       EXPERIMENT: Removing RELATIVEPOSITION from unique LOCATIONID       ###
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+# Does dropping the RELATIVEPOSITION identifier (thus reducing the number of possible dependent variable values) increase
+# classification accuracy? I will recreate the building0 dataset with new unique location IDs consisting of only building
+# number, floor number, and room number and retrain with my most successful model (Random Forest) and compare results.
+
+# Subset the data
+# wifi_bldgAA <- subset(wifi, BUILDINGID == 0)
+
+# Concatenate location identifier variables into a single unique ID, rename column, bring to front, drop old columns
+# wifi_bldgAA <- cbind(wifi_bldgAA, paste(wifi_bldgAA$BUILDINGID, wifi_bldgAA$FLOOR, wifi_bldgAA$SPACEID, sep='_'), stringsAsFactors=TRUE)    # Combine columns...
+# colnames(wifi_bldgAA)[525] <- "LOCATIONID"    # ...rename new column...
+# wifi_bldgAA <- wifi_bldgAA[,c(ncol(wifi_bldgAA), 1:(ncol(wifi_bldgAA)-1))]    # ...move it to the front of the dataframe...
+# wifi_bldgAA <- subset(wifi_bldgAA, select = -c(FLOOR, BUILDINGID, SPACEID, RELATIVEPOSITION))    # ...and drop the old columns.
+
+
+# Check feature variance in WAP columns and drop those that return no signals
+# nzvMetrics_bldgA <- nearZeroVar(wifi_bldgAA, saveMetrics=TRUE)    # Check for zero variance and near zero variance...
+# zv_bldgAA <- which(nzvMetrics_bldgAA$zeroVar == TRUE)    # ...identify columns with zero variance...
+# wifi_bldgAA <- wifi_bldgAA[,-(zv_bldgAA)]    # ...and remove each observation from the list.
+
+
+# Split data into training and testing sets
+# set.seed(2395)
+# index_bldgAA <- createDataPartition(wifi_bldgAA$LOCATIONID, p=0.75, list=FALSE)
+# trainSetAA <- wifi_bldgAA[index_bldgAA,]
+# testSetAA <- wifi_bldgAA[-index_bldgAA,]
+
+
+# Train RandomForest model
+# set.seed(2395)
+# system.time(
+#   rfFitAA <- train(trainSetAA[,2:201], trainSetAA$LOCATIONID, method="rf", trControl=ctrl, tuneLength=10) # elapsed 491.39
+# )
+
+# Best RF model produced an accuracy of 0.7691380 and Kappa of 0.7681335, compared to 0.7687383 and 0.7677386 with RELATIVEPOSITION
+# included as part of the unique identifier. The difference is insignificant.
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###                  Finalize Models and Make Predictions                    ###
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+# Set final grids for models
+c50GridTuned <- expand.grid(trials=70, model="rules", winnow=TRUE)
+adaGridTuned <- expand.grid(mfinal=500, maxdepth=10)
+knnGridTuned <- expand.grid(k=1)
+rfGridTuned <- expand.grid(mtry=24)
+nbGridTuned <- expand.grid(fL=0, usekernel=TRUE, adjust=1)
+
+# Build final models for Building A
+set.seed(2395)
+system.time(
+  c50FitA <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="C5.0", trControl=ctrl, tuneGrid=c50GridTuned) # Elapsed 127.78
+) 
+
+set.seed(2395)
+system.time(
+  adaFitA <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="AdaBag", trControl=ctrl, tuneGrid=adaGridTuned) # Elapsed 486.22
+)
+
+set.seed(2395)
+system.time(
+  knnFitA <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="knn", trControl=ctrl, tuneGrid=knnGridTuned) # Elapsed 2.69
+)
+
+set.seed(2395)
+system.time(
+  rfFitA <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="rf", trControl=ctrl, tuneGrid=rfGridTuned) # Elapsed 61.69
+)
+
+set.seed(2395)
+system.time(
+  nbFitA <- train(trainSetA[,2:201], trainSetA$LOCATIONID, method="nb", trControl=ctrl, tuneGrid=nbGridTuned) # Elapsed 675.47
+)
+
+
+# Compare metrics of models
+ModelData <- resamples(list(C50=c50FitA, ADA=adaFitA, KNN=knnFitA, RF=rfFitA, NB=nbFitA))
+summary(ModelData)
+
+
+# Make predictions on test set
+c50PredsA <- predict(c50FitA, newdata=testSetA)
+
+adaPredsA <- predict(adaFitA, newdata=testSetA)
+
+knnPredsA <- predict(knnFitA, newdata=testSetA)
+
+rfPredsA <- predict(rfFitA, newdata=testSetA)
+
+nbPredsA <- predict(nbFitA, newdata=testSetA)
+
+
+# Check confusion matrices -- too hard to glean valuable information
+# confusionMatrix(c50PredsA, testSetA$LOCATIONID)
+
+# confusionMatrix(adaPredsA, testSetA$LOCATIONID)
+
+# confusionMatrix(knnPredsA, testSetA$LOCATIONID)
+
+# confusionMatrix(rfPredsA, testSetA$LOCATIONID)
+
+# confusionMatrix(nbPredsA, testSetA$LOCATIONID)
+
+
+# Run postResample to check accuracy/Kappa
+c50prA <- postResample(c50PredsA, testSetA$LOCATIONID)
+
+adaprA <- postResample(adaPredsA, testSetA$LOCATIONID)
+
+knnprA <- postResample(knnPredsA, testSetA$LOCATIONID)
+
+rfprA <- postResample(rfPredsA, testSetA$LOCATIONID)
+
+nbprA <- postResample(nbPredsA, testSetA$LOCATIONID)
+
+postResampleGridA <- as.data.frame(c(C50=c50prA, ADA=adaprA, KNN=knnprA, RF=rfprA, NB=nbprA))
+postResampleGridA
+
+# Random Forest is the most accurate model tested. Now to apply it to the other buildings,
+
+
+################################################################################
+################################################################################
+###                                                                          ###
+###    Use Random Forest to Model Buildings B and C and Make Predictions     ###
+###                                                                          ###
+################################################################################
+################################################################################
+
+
+########################
+##     Building B     ##
+########################
+
+
+# Splitting data into training and testing sets
+set.seed(2395)
+index_bldgB <- createDataPartition(wifi_bldgB$LOCATIONID, p=0.75, list=FALSE)
+trainSetB <- wifi_bldgB[index_bldgB,]
+testSetB <- wifi_bldgB[-index_bldgB,]
+
+# Build Random Forest Model for Building B
+set.seed(2395)
+system.time(
+  rfFitB <- train(trainSetB[,2:201], trainSetB$LOCATIONID, method="rf", trControl=ctrl, tuneGrid=rfGridTuned) # Elapsed 54.50
+)
+print(rfFitB)
+
+# Make predictions on test set
+rfPredsB <- predict(rfFitB, newdata=testSetB)
+
+# Run postResample to check accuracy/Kappa
+rfprB <- postResample(rfPredsB, testSetB$LOCATIONID)
+print(rfprB)
+
+
+########################
+##     Building C     ##
+########################
+
+
+# Splitting data into training and testing sets
+set.seed(2395)
+index_bldgC <- createDataPartition(wifi_bldgC$LOCATIONID, p=0.75, list=FALSE)
+trainSetC <- wifi_bldgC[index_bldgC,]
+testSetC <- wifi_bldgC[-index_bldgC,]
+
+# Build Random Forest Model for Building C
+set.seed(2395)
+system.time(
+  rfFitC <- train(trainSetC[,2:201], trainSetC$LOCATIONID, method="rf", trControl=ctrl, tuneGrid=rfGridTuned) # Elapsed 64.61
+)
+print(rfFitC)
+
+# Make predictions on test set
+rfPredsC <- predict(rfFitC, newdata=testSetC)
+
+# Run postResample to check accuracy/Kappa
+rfprC <- postResample(rfPredsC, testSetC$LOCATIONID)
+print(rfprC)
+
+
+########################
+##    Full Data Set   ##
+########################
+
+
+wifi_campus <- wifi
+
+## Create Unique Location ID
+wifi_campus <- cbind(wifi, paste(wifi_campus$BUILDINGID, wifi_campus$FLOOR, wifi_campus$SPACEID, wifi_campus$RELATIVEPOSITION, 
+                                      sep='_'), stringsAsFactors=TRUE)
+colnames(wifi_campus)[525] <- "LOCATIONID"    # ...rename new column...
+wifi_campus <- wifi_campus[,c(ncol(wifi_campus), 1:(ncol(wifi_campus)-1))]
+wifi_campus <- subset(wifi_campus, select = -c(FLOOR, BUILDINGID, SPACEID, RELATIVEPOSITION))
+
+## Remove zero variance features
+nzvMetrics_campus <- nearZeroVar(wifi_campus, saveMetrics=TRUE)
+zv_campus <- which(nzvMetrics_campus$zeroVar == TRUE)
+wifi_campus <- wifi_campus[,-(zv_campus)]
+
+# Splitting data into training and testing sets
+set.seed(2395)
+index_campus <- createDataPartition(wifi_campus$LOCATIONID, p=0.75, list=FALSE)
+trainSetX <- wifi_campus[index_campus,]
+testSetX <- wifi_campus[-index_campus,]
+
+# Build Random Forest Model for Building C
+set.seed(2395)
+system.time(
+  rfFitX <- train(trainSetX[,2:201], trainSetX$LOCATIONID, method="rf", trControl=ctrl, tuneGrid=rfGridTuned) # Elapsed 596.22
+)
+print(rfFitX)
+
+# Make predictions on test set
+rfPredsX <- predict(rfFitX, newdata=testSetX)
+
+# Run postResample to check accuracy/Kappa
+rfprX <- postResample(rfPredsX, testSetX$LOCATIONID)
+print(rfprX)
+
+
+postResampleRFAll <- as.data.frame(c(BldgA=rfprA, BldgB=rfprB, BldgC=rfprC, CAMPUS=rfprX))
+postResampleRFAll
+
